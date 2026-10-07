@@ -1,0 +1,201 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  NFPM_VERSION: v2.47.0
+
+jobs:
+  build:
+    name: Build Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Extract version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "ARCH=${{ matrix.arch }}" >> "$GITHUB_ENV"
+
+          echo "Version: ${VERSION}"
+          echo "Architecture: ${{ matrix.arch }}"
+
+      - name: Build
+        run: |
+          make clean
+          make
+
+      - name: Verify build
+        shell: bash
+        run: |
+          test -x ./sizeof
+          test -f ./headers.csrc
+
+          file ./sizeof
+
+      - name: Install
+        run: |
+          sudo make install
+
+      - name: Verify installation
+        shell: bash
+        run: |
+          test -x /usr/bin/sizeof
+          test -f /etc/sizeof/headers.csrc
+
+      - name: Test installed binary
+        shell: bash
+        run: |
+          /usr/bin/sizeof int
+          /usr/bin/sizeof size_t
+          /usr/bin/sizeof uint64_t
+
+      - name: Install nFPM
+        shell: bash
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@${NFPM_VERSION}
+
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Verify nFPM
+        shell: bash
+        run: |
+          nfpm --version
+
+      - name: Prepare distribution directory
+        shell: bash
+        run: |
+          rm -rf dist
+          mkdir -p dist
+
+      - name: Prepare tarball
+        shell: bash
+        run: |
+          PACKAGE_NAME="sizeof-${VERSION}-linux-${ARCH}"
+
+          mkdir -p "dist/${PACKAGE_NAME}"
+
+          cp ./sizeof \
+            "dist/${PACKAGE_NAME}/sizeof"
+
+          cp ./headers.csrc \
+            "dist/${PACKAGE_NAME}/headers.csrc"
+
+          cp ./LICENSE \
+            "dist/${PACKAGE_NAME}/LICENSE"
+
+          cp ./readme.md \
+            "dist/${PACKAGE_NAME}/README.md"
+
+          tar \
+            -C dist \
+            -czf "dist/${PACKAGE_NAME}.tar.gz" \
+            "${PACKAGE_NAME}"
+
+      - name: Build DEB package
+        shell: bash
+        run: |
+          nfpm package \
+            --config packaging/nfpm.yaml \
+            --packager deb \
+            --target "dist/sizeof_${VERSION}_${ARCH}.deb"
+
+      - name: Build RPM package
+        shell: bash
+        run: |
+          nfpm package \
+            --config packaging/nfpm.yaml \
+            --packager rpm \
+            --target "dist/sizeof-${VERSION}-1.${ARCH}.rpm"
+
+      - name: Build Arch package
+        shell: bash
+        run: |
+          nfpm package \
+            --config packaging/nfpm.yaml \
+            --packager archlinux \
+            --target "dist/sizeof-${VERSION}-1-${ARCH}.pkg.tar.zst"
+
+      - name: Verify packages
+        shell: bash
+        run: |
+          test -f "dist/sizeof-${VERSION}-linux-${ARCH}.tar.gz"
+          test -f "dist/sizeof_${VERSION}_${ARCH}.deb"
+          test -f "dist/sizeof-${VERSION}-1.${ARCH}.rpm"
+          test -f "dist/sizeof-${VERSION}-1-${ARCH}.pkg.tar.zst"
+
+          echo "Generated packages:"
+          ls -lh dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: sizeof-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-24.04
+    needs: build
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd dist
+
+          sha256sum \
+            *.tar.gz \
+            *.deb \
+            *.rpm \
+            *.pkg.tar.zst \
+            > checksums.txt
+
+          echo "Checksums:"
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+            dist/*.pkg.tar.zst
+            dist/checksums.txt

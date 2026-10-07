@@ -1,0 +1,25 @@
+name: sizeof
+
+arch: ${ARCH}
+platform: linux
+
+version: ${VERSION}
+
+maintainer: "libremann"
+description: "A command-line tool that uses the C compiler to determine the size of C types instead of relying on hardcoded type checks.
+"
+
+license: MIT
+
+priority: optional
+
+contents:
+  - src: ./sizeof
+    dst: /usr/bin/sizeof
+    file_info:
+      mode: 0755
+
+  - src: ./headers.csrc
+    dst: /etc/sizeof/headers.csrc
+    file_info:
+      mode: 0644
